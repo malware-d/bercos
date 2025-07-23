@@ -1,0 +1,128 @@
+---
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: "default"
+  importDerivedRoles:
+    - bank_roles
+  resource: "account"
+  rules:
+    - actions: ['view:balance']
+      effect: EFFECT_ALLOW
+      derivedRoles:
+        - account_owner
+        - branch_manager
+        - compliance_officer
+      condition:
+        match:
+          expr: request.principal.attr.status == "active" && request.principal.attr.email_verified == true
+
+    - actions: ['view:statement']
+      effect: EFFECT_ALLOW
+      derivedRoles:
+        - account_owner
+        - branch_manager
+        - compliance_officer
+      condition:
+        match:
+          expr: request.principal.attr.status == "active" && request.principal.attr.email_verified == true
+
+    - actions: ['transfer:internal']
+      effect: EFFECT_ALLOW
+      derivedRoles:
+        - account_owner
+      condition:
+        match:
+          all:
+            of:
+              - expr: request.principal.attr.status == "active"
+              - expr: request.principal.attr.email_verified == true
+              - expr: request.resource.attr.balance >= request.principal.attr.transfer_amount
+              - expr: request.principal.attr.daily_limit >= request.principal.attr.transfer_amount
+              - expr: request.resource.attr.frozen == false
+
+    - actions: ['transfer:external']
+      effect: EFFECT_ALLOW
+      derivedRoles:
+        - account_owner
+      condition:
+        match:
+          all:
+            of:
+              - expr: request.principal.attr.status == "active"
+              - expr: request.principal.attr.email_verified == true
+              - expr: request.principal.attr.sms_verified == true
+              - expr: request.resource.attr.balance >= request.principal.attr.transfer_amount
+              - expr: request.principal.attr.daily_limit >= request.principal.attr.transfer_amount
+              - expr: request.resource.attr.frozen == false
+              - expr: request.principal.attr.transfer_amount <= 50000000 # 50 triệu VND
+
+    - actions: ['deposit']
+      effect: EFFECT_ALLOW
+      derivedRoles:
+        - account_owner
+        - teller
+        - branch_manager
+      condition:
+        match:
+          all:
+            of:
+              - expr: request.principal.attr.status == "active"
+              - expr: request.resource.attr.frozen == false
+
+    - actions: ['withdraw']
+      effect: EFFECT_ALLOW
+      derivedRoles:
+        - account_owner
+        - teller
+      condition:
+        match:
+          all:
+            of:
+              - expr: request.principal.attr.status == "active"
+              - expr: request.resource.attr.balance >= request.principal.attr.withdraw_amount
+              - expr: request.resource.attr.frozen == false
+              - expr: request.principal.attr.daily_limit >= request.principal.attr.withdraw_amount
+
+    - actions: ['freeze']
+      effect: EFFECT_ALLOW
+      derivedRoles:
+        - branch_manager
+        - compliance_officer
+        - security_admin
+      condition:
+        match:
+          expr: request.principal.attr.status == "active"
+
+    - actions: ['unfreeze']
+      effect: EFFECT_ALLOW
+      derivedRoles:
+        - branch_manager
+        - compliance_officer
+      condition:
+        match:
+          all:
+            of:
+              - expr: request.principal.attr.status == "active"
+              - expr: request.principal.attr.approval_level >= 2
+
+    - actions: ['view:admin']
+      effect: EFFECT_ALLOW
+      derivedRoles:
+        - branch_manager
+        - compliance_officer
+        - security_admin
+      condition:
+        match:
+          expr: request.principal.attr.status == "active"
+
+    - actions: ['create:account']
+      effect: EFFECT_ALLOW
+      derivedRoles:
+        - teller
+        - branch_manager
+      condition:
+        match:
+          all:
+            of:
+              - expr: request.principal.attr.status == "active"
+              - expr: request.principal.attr.branch_code == request.resource.attr.branch_code

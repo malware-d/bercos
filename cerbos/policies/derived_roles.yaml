@@ -1,34 +1,79 @@
 ---
 apiVersion: "api.cerbos.dev/v1"
 derivedRoles:
-  name: common_roles
+  name: bank_roles
   definitions:
-    - name: all_users
-      parentRoles: ["member", "moderator"]
-      condition:
-        match:
-          expr: request.principal.attr.blocked == false
-
-    - name: owner
-      parentRoles: ["member"]
+    - name: account_owner
+      parentRoles: ["customer"]
       condition:
         match:
           all:
             of:
-              - expr: request.resource.attr.userId == request.principal.attr.id
-              - expr: request.principal.attr.blocked == false
-      
-    - name: member_only
-      parentRoles: ["member"]
-      condition:
-        match:
-          expr: request.principal.attr.blocked == false
-    
-    - name: moderator_only
-      parentRoles: ["moderator"]
-      condition:
-        match:
-          expr: request.principal.attr.blocked == false
+              - expr: request.resource.attr.customer_id == request.principal.attr.customer_id
+              - expr: request.principal.attr.status == "active"
+              - expr: request.principal.attr.email.endsWith("@mbbank.com") == false || request.principal.attr.role == "customer"
 
-    - name: unknown
-      parentRoles: ["unknown"]
+    - name: teller
+      parentRoles: ["teller"]
+      condition:
+        match:
+          all:
+            of:
+              - expr: request.principal.attr.status == "active"
+              - expr: request.principal.attr.email.endsWith("@mbbank.com")
+              - expr: request.principal.attr.branch_code != ""
+
+    - name: branch_manager
+      parentRoles: ["manager"]
+      condition:
+        match:
+          all:
+            of:
+              - expr: request.principal.attr.status == "active"
+              - expr: request.principal.attr.email.endsWith("@mbbank.com")
+              - expr: request.principal.attr.approval_level >= 2
+              - expr: request.principal.attr.branch_code != ""
+
+    - name: compliance_officer
+      parentRoles: ["compliance"]
+      condition:
+        match:
+          all:
+            of:
+              - expr: request.principal.attr.status == "active"
+              - expr: request.principal.attr.email.endsWith("@mbbank.com")
+              - expr: request.principal.attr.department == "compliance"
+              - expr: request.principal.attr.approval_level >= 3
+
+    - name: security_admin
+      parentRoles: ["security"]
+      condition:
+        match:
+          all:
+            of:
+              - expr: request.principal.attr.status == "active"
+              - expr: request.principal.attr.email.endsWith("@mbbank.com")
+              - expr: request.principal.attr.department == "security"
+              - expr: request.principal.attr.approval_level >= 4
+
+    - name: system_admin
+      parentRoles: ["admin"]
+      condition:
+        match:
+          all:
+            of:
+              - expr: request.principal.attr.status == "active"
+              - expr: request.principal.attr.email.endsWith("@mbbank.com")
+              - expr: request.principal.attr.department == "it"
+              - expr: request.principal.attr.approval_level >= 5
+
+    - name: auditor
+      parentRoles: ["auditor"]
+      condition:
+        match:
+          all:
+            of:
+              - expr: request.principal.attr.status == "active"
+              - expr: request.principal.attr.email.endsWith("@mbbank.com")
+              - expr: request.principal.attr.department == "audit"
+              - expr: request.principal.attr.read_only == true
