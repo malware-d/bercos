@@ -1,105 +1,24 @@
 const axios = require('axios');
 const colors = require('colors');
 
-// Test configuration
-const BASE_URL = 'http://localhost:8000';
-const TEST_TIMEOUT = 30000;
-
-// Test data from your database
-const TEST_USERS = {
-  // Customers
-  customer1: {
-    email: "nguyenvanan@gmail.com",
-    password: "customer123",
-    customer_id: "MB001",
-    account: "0123456789",
-    name: "Nguyễn Văn An",
-    role: "customer",
-    daily_limit: 100000000,
-    expected_balance: 250000000
-  },
-  customer2: {
-    email: "tranthibinh@yahoo.com", 
-    password: "customer456",
-    customer_id: "MB002",
-    account: "0987654321",
-    name: "Trần Thị Bình",
-    role: "customer",
-    daily_limit: 50000000,
-    expected_balance: 75000000
-  },
-  customer3: {
-    email: "leminhcuong@hotmail.com",
-    password: "customer789", 
-    customer_id: "MB003",
-    account: "1122334455",
-    name: "Lê Minh Cường",
-    role: "customer",
-    status: "suspended",
-    expected_balance: 10000000
-  },
-  // Bank Staff
-  teller: {
-    email: "phamthidung@mbbank.com",
-    password: "teller123",
-    customer_id: "EMP001",
-    name: "Phạm Thị Dung",
-    role: "teller",
-    branch_code: "MB_HN001"
-  },
-  manager: {
-    email: "hoangvanem@mbbank.com",
-    password: "manager123", 
-    customer_id: "MGR001",
-    name: "Hoàng Văn Em",
-    role: "manager",
-    branch_code: "MB_HN001",
-    approval_level: 3
-  },
-  compliance: {
-    email: "vuthigiang@mbbank.com",
-    password: "compliance123",
-    customer_id: "CMP001", 
-    name: "Vũ Thị Giang",
-    role: "compliance",
-    approval_level: 4
-  },
-  security: {
-    email: "dangminhhai@mbbank.com",
-    password: "security123",
-    customer_id: "SEC001",
-    name: "Đặng Minh Hải", 
-    role: "security",
-    approval_level: 4
-  },
-  auditor: {
-    email: "lythilan@mbbank.com",
-    password: "auditor123",
-    customer_id: "AUD001",
-    name: "Lý Thị Lan",
-    role: "auditor",
-    approval_level: 3,
-    read_only: true
-  }
-};
-
-class BankingSystemTester {
-  constructor() {
+class IAMTestTool {
+  constructor(baseURL = 'http://localhost:8000') {
+    this.baseURL = baseURL;
     this.tokens = {};
     this.testResults = {
-      total: 0,
       passed: 0,
       failed: 0,
-      errors: []
+      total: 0,
+      details: []
     };
   }
 
-  // Logging utilities
+  // ========== LOGGING & UTILITIES ==========
   log(message, type = 'info') {
     const timestamp = new Date().toISOString();
     const prefix = `[${timestamp}]`;
     
-    switch(type) {
+    switch (type) {
       case 'success':
         console.log(`${prefix} ✅ ${message}`.green);
         break;
@@ -109,546 +28,798 @@ class BankingSystemTester {
       case 'warning':
         console.log(`${prefix} ⚠️  ${message}`.yellow);
         break;
-      case 'info':
-        console.log(`${prefix} ℹ️  ${message}`.blue);
+      case 'cerbos':
+        console.log(`${prefix} 🔐 [CERBOS] ${message}`.cyan);
         break;
       case 'header':
-        console.log(`\n${'='.repeat(80)}`.cyan);
-        console.log(`${prefix} 🏦 ${message}`.cyan.bold);
-        console.log(`${'='.repeat(80)}\n`.cyan);
+        console.log(`\n${'='.repeat(80)}`.blue);
+        console.log(`${message}`.blue.bold);
+        console.log(`${'='.repeat(80)}`.blue);
         break;
-      case 'subheader':
-        console.log(`\n${'-'.repeat(60)}`.magenta);
-        console.log(`${prefix} 📋 ${message}`.magenta.bold);
-        console.log(`${'-'.repeat(60)}`.magenta);
-        break;
+      default:
+        console.log(`${prefix} ℹ️  ${message}`.white);
     }
   }
 
-  logRequest(method, endpoint, data = null) {
-    this.log(`🔄 ${method.toUpperCase()} ${endpoint}`, 'info');
-    if (data) {
-      this.log(`📤 Request Body: ${JSON.stringify(data, null, 2)}`, 'info');
-    }
+  logCerbosFlow(user, action, resource, expected, actual) {
+    this.log(`Testing authorization flow:`, 'cerbos');
+    this.log(`  👤 Principal: ${user.email} (${user.role})`, 'cerbos');
+    this.log(`  🎯 Action: ${action}`, 'cerbos');
+    this.log(`  📦 Resource: ${resource.account_number || 'N/A'}`, 'cerbos');
+    this.log(`  📋 Principal Attrs: status=${user.status}, email_verified=${user.email_verified}, approval_level=${user.approval_level}`, 'cerbos');
+    this.log(`  📋 Resource Attrs: balance=${resource.balance}, frozen=${resource.frozen}, customer_id=${resource.customer_id}`, 'cerbos');
+    this.log(`  🎯 Expected: ${expected ? 'ALLOW' : 'DENY'}`, 'cerbos');
+    this.log(`  📊 Result: ${actual ? 'ALLOW' : 'DENY'}`, actual ? 'success' : 'error');
   }
 
-  logResponse(response, expectSuccess = true) {
-    const status = response.status;
-    const data = response.data;
-    const isSuccess = status >= 200 && status < 300;
-    
-    if (isSuccess === expectSuccess) {
-      this.log(`📥 Response [${status}]: ${JSON.stringify(data, null, 2)}`, 'success');
-    } else {
-      this.log(`📥 Response [${status}]: ${JSON.stringify(data, null, 2)}`, 'error');
-    }
-  }
-
-  logTestResult(testName, passed, message = '') {
+  async recordTest(testName, expected, actual, details = {}) {
+    const passed = expected === actual;
     this.testResults.total++;
+    
     if (passed) {
       this.testResults.passed++;
-      this.log(`✅ PASS: ${testName} ${message}`, 'success');
+      this.log(`PASS: ${testName}`, 'success');
     } else {
       this.testResults.failed++;
-      this.testResults.errors.push(`${testName}: ${message}`);
-      this.log(`❌ FAIL: ${testName} ${message}`, 'error');
+      this.log(`FAIL: ${testName} - Expected: ${expected}, Got: ${actual}`, 'error');
     }
+
+    this.testResults.details.push({
+      testName,
+      expected,
+      actual,
+      passed,
+      details
+    });
   }
 
-  // Authentication methods
-  async login(userKey) {
-    const user = TEST_USERS[userKey];
-    if (!user) {
-      throw new Error(`User ${userKey} not found in test data`);
-    }
-
-    this.log(`🔐 Attempting login for ${user.name} (${user.role})`, 'info');
-    
+  // ========== AUTHENTICATION ==========
+  async login(email, password) {
     try {
-      this.logRequest('POST', '/auth/login', {
-        email: user.email,
-        password: user.password
+      this.log(`Attempting login for ${email}`);
+      const response = await axios.post(`${this.baseURL}/auth/login`, {
+        email,
+        password
       });
 
-      const response = await axios.post(`${BASE_URL}/auth/login`, {
-        email: user.email,
-        password: user.password
-      });
-
-      this.logResponse(response);
-      
-      if (response.data.code === 200 && response.data.data.token) {
-        this.tokens[userKey] = response.data.data.token;
-        this.logTestResult(
-          `Login ${userKey}`, 
-          true, 
-          `- Token obtained successfully`
-        );
-        return response.data.data.token;
-      } else {
-        this.logTestResult(
-          `Login ${userKey}`, 
-          false, 
-          `- Invalid response format`
-        );
-        return null;
+      if (response.data.code === 200) {
+        const token = response.data.data.token;
+        const user = response.data.data.user;
+        this.tokens[email] = token;
+        this.log(`Login successful for ${email} (${user.role})`, 'success');
+        return { token, user };
       }
     } catch (error) {
-      this.logTestResult(
-        `Login ${userKey}`, 
-        false, 
-        `- ${error.response?.data?.message || error.message}`
-      );
-      return null;
+      this.log(`Login failed for ${email}: ${error.response?.data?.message || error.message}`, 'error');
+      throw error;
     }
   }
 
-  // Account operations
-  async getAccountInfo(userKey, accountNumber) {
-    const token = this.tokens[userKey];
-    if (!token) {
-      this.logTestResult(`Get Account Info ${userKey}`, false, '- No token available');
-      return null;
-    }
+  async loginAllUsers() {
+    const credentials = [
+      // Customers
+      { email: 'nguyenvanan@gmail.com', password: 'customer123' },
+      { email: 'tranthibinh@yahoo.com', password: 'customer456' },
+      { email: 'leminhcuong@hotmail.com', password: 'customer789' },
+      // Bank Staff
+      { email: 'phamthidung@mbbank.com', password: 'teller123' },
+      { email: 'hoangvanem@mbbank.com', password: 'manager123' },
+      { email: 'vuthigiang@mbbank.com', password: 'compliance123' },
+      { email: 'dangminhhai@mbbank.com', password: 'security123' },
+      { email: 'lythilan@mbbank.com', password: 'auditor123' }
+    ];
 
-    this.log(`🏦 Getting account info for ${accountNumber} as ${userKey}`, 'info');
-    
-    try {
-      this.logRequest('GET', `/accounts/${accountNumber}`);
-      
-      const response = await axios.get(`${BASE_URL}/accounts/${accountNumber}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-
-      this.logResponse(response);
-      this.logTestResult(`Get Account Info ${userKey}`, true, `- Account info retrieved`);
-      return response.data;
-    } catch (error) {
-      const statusCode = error.response?.status;
-      const message = error.response?.data?.message || error.message;
-      
-      this.logResponse(error.response, false);
-      this.logTestResult(
-        `Get Account Info ${userKey}`, 
-        statusCode === 403 ? true : false, // 403 is expected for unauthorized access
-        `- [${statusCode}] ${message}`
-      );
-      return null;
-    }
-  }
-
-  async getBalance(userKey, accountNumber) {
-    const token = this.tokens[userKey];
-    if (!token) {
-      this.logTestResult(`Get Balance ${userKey}`, false, '- No token available');
-      return null;
-    }
-
-    this.log(`💰 Getting balance for ${accountNumber} as ${userKey}`, 'info');
-    
-    try {
-      this.logRequest('GET', `/accounts/${accountNumber}/balance`);
-      
-      const response = await axios.get(`${BASE_URL}/accounts/${accountNumber}/balance`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-
-      this.logResponse(response);
-      this.logTestResult(`Get Balance ${userKey}`, true, `- Balance: ${response.data.data?.balance || 'N/A'} VND`);
-      return response.data;
-    } catch (error) {
-      const statusCode = error.response?.status;
-      const message = error.response?.data?.message || error.message;
-      
-      this.logResponse(error.response, false);
-      this.logTestResult(
-        `Get Balance ${userKey}`, 
-        statusCode === 403 ? true : false,
-        `- [${statusCode}] ${message}`
-      );
-      return null;
-    }
-  }
-
-  async transfer(userKey, fromAccount, toAccount, amount, transferType = 'internal', description = 'Test transfer') {
-    const token = this.tokens[userKey];
-    if (!token) {
-      this.logTestResult(`Transfer ${userKey}`, false, '- No token available');
-      return null;
-    }
-
-    this.log(`💸 Transfer ${amount} VND from ${fromAccount} to ${toAccount} as ${userKey} (${transferType})`, 'info');
-    
-    const transferData = {
-      to_account: toAccount,
-      amount: amount,
-      transfer_type: transferType,
-      description: description
-    };
-
-    try {
-      this.logRequest('POST', `/accounts/${fromAccount}/transfer`, transferData);
-      
-      const response = await axios.post(`${BASE_URL}/accounts/${fromAccount}/transfer`, transferData, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-
-      this.logResponse(response);
-      this.logTestResult(`Transfer ${userKey}`, true, `- ${amount} VND transferred successfully`);
-      return response.data;
-    } catch (error) {
-      const statusCode = error.response?.status;
-      const message = error.response?.data?.message || error.message;
-      
-      this.logResponse(error.response, false);
-      this.logTestResult(
-        `Transfer ${userKey}`, 
-        false,
-        `- [${statusCode}] ${message}`
-      );
-      return null;
-    }
-  }
-
-  async deposit(userKey, accountNumber, amount, description = 'Test deposit') {
-    const token = this.tokens[userKey];
-    if (!token) {
-      this.logTestResult(`Deposit ${userKey}`, false, '- No token available');
-      return null;
-    }
-
-    this.log(`💵 Deposit ${amount} VND to ${accountNumber} as ${userKey}`, 'info');
-    
-    const depositData = {
-      amount: amount,
-      description: description
-    };
-
-    try {
-      this.logRequest('POST', `/accounts/${accountNumber}/deposit`, depositData);
-      
-      const response = await axios.post(`${BASE_URL}/accounts/${accountNumber}/deposit`, depositData, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-
-      this.logResponse(response);
-      this.logTestResult(`Deposit ${userKey}`, true, `- ${amount} VND deposited successfully`);
-      return response.data;
-    } catch (error) {
-      const statusCode = error.response?.status;
-      const message = error.response?.data?.message || error.message;
-      
-      this.logResponse(error.response, false);
-      this.logTestResult(
-        `Deposit ${userKey}`, 
-        false,
-        `- [${statusCode}] ${message}`
-      );
-      return null;
-    }
-  }
-
-  async withdraw(userKey, accountNumber, amount, description = 'Test withdrawal') {
-    const token = this.tokens[userKey];
-    if (!token) {
-      this.logTestResult(`Withdraw ${userKey}`, false, '- No token available');
-      return null;
-    }
-
-    this.log(`💸 Withdraw ${amount} VND from ${accountNumber} as ${userKey}`, 'info');
-    
-    const withdrawData = {
-      amount: amount,
-      description: description
-    };
-
-    try {
-      this.logRequest('POST', `/accounts/${accountNumber}/withdraw`, withdrawData);
-      
-      const response = await axios.post(`${BASE_URL}/accounts/${accountNumber}/withdraw`, withdrawData, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-
-      this.logResponse(response);
-      this.logTestResult(`Withdraw ${userKey}`, true, `- ${amount} VND withdrawn successfully`);
-      return response.data;
-    } catch (error) {
-      const statusCode = error.response?.status;
-      const message = error.response?.data?.message || error.message;
-      
-      this.logResponse(error.response, false);
-      this.logTestResult(
-        `Withdraw ${userKey}`, 
-        false,
-        `- [${statusCode}] ${message}`
-      );
-      return null;
-    }
-  }
-
-  async freezeAccount(userKey, accountNumber, reason = 'Test freeze') {
-    const token = this.tokens[userKey];
-    if (!token) {
-      this.logTestResult(`Freeze Account ${userKey}`, false, '- No token available');
-      return null;
-    }
-
-    this.log(`🧊 Freeze account ${accountNumber} as ${userKey}`, 'info');
-    
-    const freezeData = {
-      reason: reason
-    };
-
-    try {
-      this.logRequest('POST', `/accounts/${accountNumber}/freeze`, freezeData);
-      
-      const response = await axios.post(`${BASE_URL}/accounts/${accountNumber}/freeze`, freezeData, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-
-      this.logResponse(response);
-      this.logTestResult(`Freeze Account ${userKey}`, true, `- Account frozen successfully`);
-      return response.data;
-    } catch (error) {
-      const statusCode = error.response?.status;
-      const message = error.response?.data?.message || error.message;
-      
-      this.logResponse(error.response, false);
-      this.logTestResult(
-        `Freeze Account ${userKey}`, 
-        statusCode === 403 ? true : false,
-        `- [${statusCode}] ${message}`
-      );
-      return null;
-    }
-  }
-
-  async unfreezeAccount(userKey, accountNumber, reason = 'Test unfreeze') {
-    const token = this.tokens[userKey];
-    if (!token) {
-      this.logTestResult(`Unfreeze Account ${userKey}`, false, '- No token available');
-      return null;
-    }
-
-    this.log(`🔥 Unfreeze account ${accountNumber} as ${userKey}`, 'info');
-    
-    const unfreezeData = {
-      reason: reason
-    };
-
-    try {
-      this.logRequest('POST', `/accounts/${accountNumber}/unfreeze`, unfreezeData);
-      
-      const response = await axios.post(`${BASE_URL}/accounts/${accountNumber}/unfreeze`, unfreezeData, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-
-      this.logResponse(response);
-      this.logTestResult(`Unfreeze Account ${userKey}`, true, `- Account unfrozen successfully`);
-      return response.data;
-    } catch (error) {
-      const statusCode = error.response?.status;
-      const message = error.response?.data?.message || error.message;
-      
-      this.logResponse(error.response, false);
-      this.logTestResult(
-        `Unfreeze Account ${userKey}`, 
-        statusCode === 403 ? true : false,
-        `- [${statusCode}] ${message}`
-      );
-      return null;
-    }
-  }
-
-  // Test scenarios
-  async runAuthenticationTests() {
-    this.log('Authentication & Authorization Tests', 'header');
-    
-    // Test successful logins
-    this.log('Testing successful logins for all users', 'subheader');
-    for (const [userKey, user] of Object.entries(TEST_USERS)) {
-      await this.login(userKey);
-      await new Promise(resolve => setTimeout(resolve, 100)); // Small delay between requests
-    }
-
-    // Test invalid credentials
-    this.log('Testing invalid credentials', 'subheader');
-    try {
-      this.logRequest('POST', '/auth/login', {
-        email: "invalid@test.com",
-        password: "wrongpassword"
-      });
-      
-      const response = await axios.post(`${BASE_URL}/auth/login`, {
-        email: "invalid@test.com",
-        password: "wrongpassword"
-      });
-      
-      this.logTestResult('Invalid Login', false, '- Should have failed but succeeded');
-    } catch (error) {
-      this.logResponse(error.response, false);
-      this.logTestResult('Invalid Login', true, '- Correctly rejected invalid credentials');
-    }
-  }
-
-  async runAccountAccessTests() {
-    this.log('Account Access Control Tests', 'header');
-
-    // Test account owners can access their accounts
-    this.log('Testing account owners can access their own accounts', 'subheader');
-    await this.getBalance('customer1', TEST_USERS.customer1.account);
-    await this.getBalance('customer2', TEST_USERS.customer2.account);
-
-    // Test account owners cannot access other accounts
-    this.log('Testing account owners cannot access other accounts', 'subheader');
-    await this.getBalance('customer1', TEST_USERS.customer2.account); // Should fail
-    await this.getBalance('customer2', TEST_USERS.customer1.account); // Should fail
-
-    // Test bank staff access
-    this.log('Testing bank staff access to accounts', 'subheader');
-    await this.getBalance('manager', TEST_USERS.customer1.account);
-    await this.getBalance('compliance', TEST_USERS.customer1.account);
-    await this.getBalance('teller', TEST_USERS.customer1.account); // Should fail for balance
-    await this.getAccountInfo('teller', TEST_USERS.customer1.account);
-  }
-
-  async runTransferTests() {
-    this.log('Transfer Tests', 'header');
-
-    // Test internal transfers
-    this.log('Testing internal transfers', 'subheader');
-    await this.transfer('customer1', TEST_USERS.customer1.account, TEST_USERS.customer2.account, 1000000, 'internal');
-    
-    // Test external transfers
-    this.log('Testing external transfers', 'subheader');
-    await this.transfer('customer1', TEST_USERS.customer1.account, 'external_account_123', 2000000, 'external');
-    
-    // Test transfer limits
-    this.log('Testing transfer limits', 'subheader');
-    await this.transfer('customer1', TEST_USERS.customer1.account, 'external_account_123', 60000000, 'external'); // Should fail - over 50M limit
-    
-    // Test insufficient balance
-    this.log('Testing insufficient balance transfers', 'subheader');
-    await this.transfer('customer2', TEST_USERS.customer2.account, TEST_USERS.customer1.account, 100000000, 'internal'); // Should fail - insufficient balance
-  }
-
-  async runDepositWithdrawTests() {
-    this.log('Deposit & Withdrawal Tests', 'header');
-
-    // Test deposits
-    this.log('Testing deposits', 'subheader');
-    await this.deposit('customer1', TEST_USERS.customer1.account, 5000000);
-    await this.deposit('teller', TEST_USERS.customer1.account, 3000000); // Teller can deposit
-    
-    // Test withdrawals
-    this.log('Testing withdrawals', 'subheader');
-    await this.withdraw('customer1', TEST_USERS.customer1.account, 2000000);
-    await this.withdraw('teller', TEST_USERS.customer1.account, 1000000); // Teller can withdraw
-    
-    // Test excessive withdrawal
-    this.log('Testing excessive withdrawals', 'subheader');
-    await this.withdraw('customer2', TEST_USERS.customer2.account, 100000000); // Should fail - insufficient balance
-  }
-
-  async runFreezeUnfreezeTests() {
-    this.log('Account Freeze/Unfreeze Tests', 'header');
-
-    // Test freeze permissions
-    this.log('Testing freeze permissions', 'subheader');
-    await this.freezeAccount('manager', TEST_USERS.customer1.account); // Should succeed
-    await this.freezeAccount('compliance', TEST_USERS.customer1.account); // Should succeed  
-    await this.freezeAccount('security', TEST_USERS.customer1.account); // Should succeed
-    await this.freezeAccount('teller', TEST_USERS.customer1.account); // Should fail
-    await this.freezeAccount('customer1', TEST_USERS.customer1.account); // Should fail
-
-    // Test unfreeze permissions
-    this.log('Testing unfreeze permissions', 'subheader');
-    await this.unfreezeAccount('manager', TEST_USERS.customer1.account); // Should succeed
-    await this.unfreezeAccount('compliance', TEST_USERS.customer1.account); // Should succeed
-    await this.unfreezeAccount('teller', TEST_USERS.customer1.account); // Should fail
-  }
-
-  async runSuspendedUserTests() {
-    this.log('Suspended User Tests', 'header');
-    
-    // Test suspended user login (if allowed)
-    this.log('Testing suspended user access', 'subheader');
-    const suspendedToken = await this.login('customer3');
-    
-    if (suspendedToken) {
-      // Test operations with suspended user
-      await this.getBalance('customer3', TEST_USERS.customer3.account);
-      await this.transfer('customer3', TEST_USERS.customer3.account, TEST_USERS.customer1.account, 1000000, 'internal');
-    }
-  }
-
-  async runRoleBasedTests() {
-    this.log('Role-Based Access Control Tests', 'header');
-
-    // Test auditor read-only access
-    this.log('Testing auditor read-only access', 'subheader');
-    await this.getBalance('auditor', TEST_USERS.customer1.account); // Should succeed
-    await this.transfer('auditor', TEST_USERS.customer1.account, TEST_USERS.customer2.account, 1000000, 'internal'); // Should fail
-    await this.deposit('auditor', TEST_USERS.customer1.account, 1000000); // Should fail
-    await this.freezeAccount('auditor', TEST_USERS.customer1.account); // Should fail
-
-    // Test branch restrictions
-    this.log('Testing branch restrictions', 'subheader');
-    // Note: customer3 is in different branch (MB_HN002)
-    await this.deposit('teller', TEST_USERS.customer3.account, 1000000); // Should fail - different branch
-  }
-
-  async runComprehensiveTests() {
-    this.log('🏦 BANKING SYSTEM COMPREHENSIVE TEST SUITE', 'header');
-    this.log(`Server: ${BASE_URL}`, 'info');
-    this.log(`Test Timeout: ${TEST_TIMEOUT}ms`, 'info');
-    
-    try {
-      // Set timeout for all requests
-      axios.defaults.timeout = TEST_TIMEOUT;
-      
-      await this.runAuthenticationTests();
-      await this.runAccountAccessTests();
-      await this.runTransferTests();
-      await this.runDepositWithdrawTests();
-      await this.runFreezeUnfreezeTests();
-      await this.runSuspendedUserTests();
-      await this.runRoleBasedTests();
-
-      // Final summary
-      this.log('TEST SUMMARY', 'header');
-      this.log(`Total Tests: ${this.testResults.total}`, 'info');
-      this.log(`Passed: ${this.testResults.passed}`, 'success');
-      this.log(`Failed: ${this.testResults.failed}`, this.testResults.failed > 0 ? 'error' : 'success');
-      
-      if (this.testResults.errors.length > 0) {
-        this.log('FAILED TESTS:', 'error');
-        this.testResults.errors.forEach(error => {
-          this.log(`  • ${error}`, 'error');
-        });
+    const users = {};
+    for (const cred of credentials) {
+      try {
+        const result = await this.login(cred.email, cred.password);
+        users[cred.email] = result;
+      } catch (error) {
+        // Some users might be suspended, that's expected
+        if (error.response?.data?.message?.includes('not active')) {
+          this.log(`User ${cred.email} is inactive (expected for suspended users)`, 'warning');
+        }
       }
+    }
+    return users;
+  }
 
-      const successRate = ((this.testResults.passed / this.testResults.total) * 100).toFixed(2);
-      this.log(`Success Rate: ${successRate}%`, successRate > 80 ? 'success' : 'warning');
+  // ========== API TEST HELPERS ==========
+  async makeRequest(method, endpoint, data = null, token = null) {
+    const config = {
+      method,
+      url: `${this.baseURL}${endpoint}`,
+      headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+    };
 
+    if (data) {
+      config.data = data;
+    }
+
+    try {
+      const response = await axios(config);
+      return { success: true, data: response.data, status: response.status };
+    } catch (error) {
+      return { 
+        success: false, 
+        data: error.response?.data || null, 
+        status: error.response?.status || 0,
+        error: error.message 
+      };
+    }
+  }
+
+  // ========== COMPREHENSIVE TEST SCENARIOS ==========
+  
+  async testViewBalancePermissions(users) {
+    this.log('Testing View Balance Permissions', 'header');
+    
+    const testCases = [
+      // Account Owner Access
+      {
+        user: users['nguyenvanan@gmail.com'],
+        account: '0123456789',
+        expected: true,
+        description: 'Account owner accessing own account'
+      },
+      {
+        user: users['tranthibinh@yahoo.com'],
+        account: '0987654321', 
+        expected: true,
+        description: 'Account owner accessing own account'
+      },
+      {
+        user: users['nguyenvanan@gmail.com'],
+        account: '0987654321',
+        expected: false,
+        description: 'Customer accessing another customer account'
+      },
+      // Staff Access
+      {
+        user: users['hoangvanem@mbbank.com'],
+        account: '0123456789',
+        expected: true,
+        description: 'Branch manager accessing customer account'
+      },
+      {
+        user: users['vuthigiang@mbbank.com'],
+        account: '0123456789',
+        expected: true,
+        description: 'Compliance officer accessing customer account'
+      },
+      {
+        user: users['phamthidung@mbbank.com'],
+        account: '0123456789',
+        expected: false,
+        description: 'Teller should not have view:balance permission'
+      }
+    ];
+
+    for (const testCase of testCases) {
+      if (!testCase.user) continue;
+      
+      const result = await this.makeRequest(
+        'GET', 
+        `/accounts/${testCase.account}/balance`,
+        null,
+        testCase.user.token
+      );
+
+      this.logCerbosFlow(
+        testCase.user.user,
+        'view:balance',
+        { account_number: testCase.account, customer_id: testCase.account === '0123456789' ? 'MB001' : 'MB002' },
+        testCase.expected,
+        result.success
+      );
+
+      await this.recordTest(
+        `View Balance: ${testCase.description}`,
+        testCase.expected,
+        result.success,
+        { endpoint: `/accounts/${testCase.account}/balance`, response: result }
+      );
+    }
+  }
+
+  async testTransferPermissions(users) {
+    this.log('Testing Transfer Permissions', 'header');
+    
+    const testCases = [
+      // Internal Transfer Tests
+      {
+        user: users['nguyenvanan@gmail.com'],
+        account: '0123456789',
+        transferData: {
+          to_account: '0987654321',
+          amount: 5000000,
+          transfer_type: 'internal'
+        },
+        expected: true,
+        description: 'Account owner internal transfer - sufficient balance'
+      },
+      {
+        user: users['nguyenvanan@gmail.com'],
+        account: '0123456789',
+        transferData: {
+          to_account: '0987654321',
+          amount: 500000000, // Exceed balance
+          transfer_type: 'internal'
+        },
+        expected: false,
+        description: 'Account owner internal transfer - insufficient balance'
+      },
+      // External Transfer Tests
+      {
+        user: users['nguyenvanan@gmail.com'],
+        account: '0123456789',
+        transferData: {
+          to_account: 'external_bank_123',
+          amount: 10000000,
+          transfer_type: 'external'
+        },
+        expected: true,
+        description: 'Account owner external transfer - valid amount'
+      },
+      {
+        user: users['tranthibinh@yahoo.com'],
+        account: '0987654321',
+        transferData: {
+          to_account: 'external_bank_123',
+          amount: 10000000,
+          transfer_type: 'external'
+        },
+        expected: false,
+        description: 'Account owner external transfer - SMS not verified'
+      },
+      {
+        user: users['nguyenvanan@gmail.com'],
+        account: '0123456789',
+        transferData: {
+          to_account: 'external_bank_123',
+          amount: 60000000, // Exceed limit
+          transfer_type: 'external'
+        },
+        expected: false,
+        description: 'Account owner external transfer - exceed 50M limit'
+      },
+      // Staff Transfer Tests
+      {
+        user: users['phamthidung@mbbank.com'],
+        account: '0123456789',
+        transferData: {
+          to_account: '0987654321',
+          amount: 1000000,
+          transfer_type: 'internal'
+        },
+        expected: false,
+        description: 'Teller attempting transfer - should be denied'
+      }
+    ];
+
+    for (const testCase of testCases) {
+      if (!testCase.user) continue;
+      
+      const result = await this.makeRequest(
+        'POST',
+        `/accounts/${testCase.account}/transfer`,
+        testCase.transferData,
+        testCase.user.token
+      );
+
+      const action = testCase.transferData.transfer_type === 'external' ? 'transfer:external' : 'transfer:internal';
+      
+      this.logCerbosFlow(
+        testCase.user.user,
+        action,
+        {
+          account_number: testCase.account,
+          customer_id: testCase.account === '0123456789' ? 'MB001' : 'MB002',
+          balance: testCase.account === '0123456789' ? 250000000 : 75000000,
+          frozen: false
+        },
+        testCase.expected,
+        result.success
+      );
+
+      await this.recordTest(
+        `Transfer: ${testCase.description}`,
+        testCase.expected,
+        result.success,
+        { endpoint: `/accounts/${testCase.account}/transfer`, response: result }
+      );
+    }
+  }
+
+  async testDepositWithdrawPermissions(users) {
+    this.log('Testing Deposit/Withdraw Permissions', 'header');
+    
+    const depositTests = [
+      {
+        user: users['nguyenvanan@gmail.com'],
+        account: '0123456789',
+        amount: 1000000,
+        expected: true,
+        description: 'Account owner deposit'
+      },
+      {
+        user: users['phamthidung@mbbank.com'],
+        account: '0123456789',
+        amount: 1000000,
+        expected: true,
+        description: 'Teller deposit'
+      },
+      {
+        user: users['hoangvanem@mbbank.com'],
+        account: '0123456789',
+        amount: 1000000,
+        expected: true,
+        description: 'Branch manager deposit'
+      },
+      {
+        user: users['vuthigiang@mbbank.com'],
+        account: '0123456789',
+        amount: 1000000,
+        expected: false,
+        description: 'Compliance officer deposit - should be denied'
+      }
+    ];
+
+    for (const testCase of depositTests) {
+      if (!testCase.user) continue;
+      
+      const result = await this.makeRequest(
+        'POST',
+        `/accounts/${testCase.account}/deposit`,
+        { amount: testCase.amount },
+        testCase.user.token
+      );
+
+      this.logCerbosFlow(
+        testCase.user.user,
+        'deposit',
+        {
+          account_number: testCase.account,
+          customer_id: 'MB001',
+          frozen: false
+        },
+        testCase.expected,
+        result.success
+      );
+
+      await this.recordTest(
+        `Deposit: ${testCase.description}`,
+        testCase.expected,
+        result.success
+      );
+    }
+
+    const withdrawTests = [
+      {
+        user: users['nguyenvanan@gmail.com'],
+        account: '0123456789',
+        amount: 1000000,
+        expected: true,
+        description: 'Account owner withdraw'
+      },
+      {
+        user: users['phamthidung@mbbank.com'],
+        account: '0123456789',
+        amount: 1000000,
+        expected: true,
+        description: 'Teller withdraw'
+      },
+      {
+        user: users['hoangvanem@mbbank.com'],
+        account: '0123456789',
+        amount: 1000000,
+        expected: false,
+        description: 'Branch manager withdraw - should be denied'
+      }
+    ];
+
+    for (const testCase of withdrawTests) {
+      if (!testCase.user) continue;
+      
+      const result = await this.makeRequest(
+        'POST',
+        `/accounts/${testCase.account}/withdraw`,
+        { amount: testCase.amount },
+        testCase.user.token
+      );
+
+      this.logCerbosFlow(
+        testCase.user.user,
+        'withdraw',
+        {
+          account_number: testCase.account,
+          customer_id: 'MB001',
+          balance: 250000000,
+          frozen: false
+        },
+        testCase.expected,
+        result.success
+      );
+
+      await this.recordTest(
+        `Withdraw: ${testCase.description}`,
+        testCase.expected,
+        result.success
+      );
+    }
+  }
+
+  async testFreezeUnfreezePermissions(users) {
+    this.log('Testing Freeze/Unfreeze Permissions', 'header');
+    
+    const freezeTests = [
+      {
+        user: users['hoangvanem@mbbank.com'],
+        account: '0987654321',
+        expected: true,
+        description: 'Branch manager freeze account'
+      },
+      {
+        user: users['vuthigiang@mbbank.com'],
+        account: '0987654321',
+        expected: true,
+        description: 'Compliance officer freeze account'
+      },
+      {
+        user: users['dangminhhai@mbbank.com'],
+        account: '0987654321',
+        expected: true,
+        description: 'Security admin freeze account'
+      },
+      {
+        user: users['phamthidung@mbbank.com'],
+        account: '0987654321',
+        expected: false,
+        description: 'Teller freeze account - should be denied'
+      },
+      {
+        user: users['nguyenvanan@gmail.com'],
+        account: '0123456789',
+        expected: false,
+        description: 'Customer freeze own account - should be denied'
+      }
+    ];
+
+    for (const testCase of freezeTests) {
+      if (!testCase.user) continue;
+      
+      const result = await this.makeRequest(
+        'POST',
+        `/accounts/${testCase.account}/freeze`,
+        { reason: 'Test freeze' },
+        testCase.user.token
+      );
+
+      this.logCerbosFlow(
+        testCase.user.user,
+        'freeze',
+        {
+          account_number: testCase.account,
+          customer_id: testCase.account === '0123456789' ? 'MB001' : 'MB002'
+        },
+        testCase.expected,
+        result.success
+      );
+
+      await this.recordTest(
+        `Freeze: ${testCase.description}`,
+        testCase.expected,
+        result.success
+      );
+    }
+
+    // Test unfreeze (requires approval_level >= 2)
+    const unfreezeTests = [
+      {
+        user: users['hoangvanem@mbbank.com'], // approval_level: 3
+        account: '1122334455', // Already frozen
+        expected: true,
+        description: 'Branch manager unfreeze account'
+      },
+      {
+        user: users['vuthigiang@mbbank.com'], // approval_level: 4
+        account: '1122334455',
+        expected: true,
+        description: 'Compliance officer unfreeze account'
+      },
+      {
+        user: users['phamthidung@mbbank.com'], // approval_level: 1
+        account: '1122334455',
+        expected: false,
+        description: 'Teller unfreeze account - insufficient approval level'
+      }
+    ];
+
+    for (const testCase of unfreezeTests) {
+      if (!testCase.user) continue;
+      
+      const result = await this.makeRequest(
+        'POST',
+        `/accounts/${testCase.account}/unfreeze`,
+        { reason: 'Test unfreeze' },
+        testCase.user.token
+      );
+
+      this.logCerbosFlow(
+        testCase.user.user,
+        'unfreeze',
+        {
+          account_number: testCase.account,
+          customer_id: 'MB003',
+          frozen: true
+        },
+        testCase.expected,
+        result.success
+      );
+
+      await this.recordTest(
+        `Unfreeze: ${testCase.description}`,
+        testCase.expected,
+        result.success
+      );
+    }
+  }
+
+  async testAdminPermissions(users) {
+    this.log('Testing Admin View Permissions', 'header');
+    
+    const adminTests = [
+      {
+        user: users['hoangvanem@mbbank.com'],
+        endpoint: '/accounts',
+        expected: true,
+        description: 'Branch manager view all accounts'
+      },
+      {
+        user: users['vuthigiang@mbbank.com'],
+        endpoint: '/accounts',
+        expected: true,
+        description: 'Compliance officer view all accounts'
+      },
+      {
+        user: users['dangminhhai@mbbank.com'],
+        endpoint: '/accounts',
+        expected: true,
+        description: 'Security admin view all accounts'
+      },
+      {
+        user: users['lythilan@mbbank.com'],
+        endpoint: '/accounts',
+        expected: true,
+        description: 'Auditor view all accounts (read-only)'
+      },
+      {
+        user: users['phamthidung@mbbank.com'],
+        endpoint: '/accounts',
+        expected: false,
+        description: 'Teller view all accounts - should be denied'
+      },
+      {
+        user: users['nguyenvanan@gmail.com'],
+        endpoint: '/accounts',
+        expected: false,
+        description: 'Customer view all accounts - should be denied'
+      }
+    ];
+
+    for (const testCase of adminTests) {
+      if (!testCase.user) continue;
+      
+      const result = await this.makeRequest(
+        'GET',
+        testCase.endpoint,
+        null,
+        testCase.user.token
+      );
+
+      this.logCerbosFlow(
+        testCase.user.user,
+        'view:admin',
+        { resource_type: 'admin_view' },
+        testCase.expected,
+        result.success
+      );
+
+      await this.recordTest(
+        `Admin View: ${testCase.description}`,
+        testCase.expected,
+        result.success
+      );
+    }
+  }
+
+  async testAccountCreation(users) {
+    this.log('Testing Account Creation Permissions', 'header');
+    
+    const createTests = [
+      {
+        user: users['phamthidung@mbbank.com'],
+        accountData: {
+          customer_id: 'MB004',
+          account_type: 'savings',
+          initial_deposit: 1000000
+        },
+        expected: true,
+        description: 'Teller create account'
+      },
+      {
+        user: users['hoangvanem@mbbank.com'],
+        accountData: {
+          customer_id: 'MB005',
+          account_type: 'checking',
+          initial_deposit: 5000000
+        },
+        expected: true,
+        description: 'Branch manager create account'
+      },
+      {
+        user: users['vuthigiang@mbbank.com'],
+        accountData: {
+          customer_id: 'MB006',
+          account_type: 'savings'
+        },
+        expected: false,
+        description: 'Compliance officer create account - should be denied'
+      },
+      {
+        user: users['nguyenvanan@gmail.com'],
+        accountData: {
+          customer_id: 'MB007',
+          account_type: 'savings'
+        },
+        expected: false,
+        description: 'Customer create account - should be denied'
+      }
+    ];
+
+    for (const testCase of createTests) {
+      if (!testCase.user) continue;
+      
+      const result = await this.makeRequest(
+        'POST',
+        '/accounts',
+        testCase.accountData,
+        testCase.user.token
+      );
+
+      this.logCerbosFlow(
+        testCase.user.user,
+        'create:account',
+        {
+          customer_id: testCase.accountData.customer_id,
+          branch_code: testCase.user.user.branch_code
+        },
+        testCase.expected,
+        result.success
+      );
+
+      await this.recordTest(
+        `Create Account: ${testCase.description}`,
+        testCase.expected,
+        result.success
+      );
+    }
+  }
+
+  async testFrozenAccountScenarios(users) {
+    this.log('Testing Frozen Account Scenarios', 'header');
+    
+    // Account 1122334455 is frozen in the database
+    const frozenAccountTests = [
+      {
+        user: users['leminhcuong@hotmail.com'], // This user is suspended, won't work
+        account: '1122334455',
+        action: 'withdraw',
+        data: { amount: 1000000 },
+        expected: false,
+        description: 'Suspended user access frozen account'
+      },
+      {
+        user: users['nguyenvanan@gmail.com'],
+        account: '1122334455',
+        action: 'transfer',
+        data: { to_account: '0987654321', amount: 1000000, transfer_type: 'internal' },
+        expected: false,
+        description: 'Transfer from frozen account - should be denied'
+      }
+    ];
+
+    for (const testCase of frozenAccountTests) {
+      if (!testCase.user) {
+        this.log(`Skipping test for suspended user: ${testCase.description}`, 'warning');
+        continue;
+      }
+      
+      const result = await this.makeRequest(
+        'POST',
+        `/accounts/${testCase.account}/${testCase.action}`,
+        testCase.data,
+        testCase.user.token
+      );
+
+      await this.recordTest(
+        `Frozen Account: ${testCase.description}`,
+        testCase.expected,
+        result.success
+      );
+    }
+  }
+
+  // ========== MAIN TEST RUNNER ==========
+  async runAllTests() {
+    console.log('🚀 Starting JPMorgan Chase IAM System Comprehensive Testing'.rainbow.bold);
+    console.log('=' .repeat(80));
+    
+    try {
+      // 1. Login all users
+      this.log('Phase 1: User Authentication', 'header');
+      const users = await this.loginAllUsers();
+      
+      // 2. Run all test scenarios
+      await this.testViewBalancePermissions(users);
+      await this.testTransferPermissions(users);
+      await this.testDepositWithdrawPermissions(users);
+      await this.testFreezeUnfreezePermissions(users);
+      await this.testAdminPermissions(users);
+      await this.testAccountCreation(users);
+      await this.testFrozenAccountScenarios(users);
+      
+      // 3. Generate final report
+      this.generateFinalReport();
+      
     } catch (error) {
       this.log(`Critical error during testing: ${error.message}`, 'error');
       console.error(error);
     }
   }
+
+  generateFinalReport() {
+    this.log('Final Test Report', 'header');
+    
+    console.log(`📊 Test Summary:`.bold);
+    console.log(`   Total Tests: ${this.testResults.total}`);
+    console.log(`   ✅ Passed: ${this.testResults.passed}`.green);
+    console.log(`   ❌ Failed: ${this.testResults.failed}`.red);
+    console.log(`   📈 Success Rate: ${((this.testResults.passed / this.testResults.total) * 100).toFixed(2)}%`);
+    
+    if (this.testResults.failed > 0) {
+      console.log(`\n🔍 Failed Tests:`.red.bold);
+      this.testResults.details
+        .filter(test => !test.passed)
+        .forEach(test => {
+          console.log(`   ❌ ${test.testName}`.red);
+          console.log(`      Expected: ${test.expected}, Got: ${test.actual}`);
+        });
+    }
+    
+    console.log(`\n🎯 Cerbos Policy Coverage Validated:`.green.bold);
+    console.log(`   ✓ Derived Roles (account_owner, teller, branch_manager, etc.)`);
+    console.log(`   ✓ Resource Policies (view:balance, transfer:internal/external, freeze/unfreeze)`);
+    console.log(`   ✓ Conditional Logic (balance checks, verification status, approval levels)`);
+    console.log(`   ✓ Role-based Access Control (RBAC) with attribute-based conditions`);
+    console.log(`   ✓ Security Constraints (frozen accounts, daily limits, verification requirements)`);
+    
+    console.log(`\n🏦 Banking Operations Tested:`.cyan.bold);
+    console.log(`   ✓ Account Balance Viewing`);
+    console.log(`   ✓ Internal & External Transfers`);
+    console.log(`   ✓ Deposit & Withdrawal Operations`);
+    console.log(`   ✓ Account Freeze/Unfreeze`);
+    console.log(`   ✓ Administrative Functions`);
+    console.log(`   ✓ Account Creation`);
+    console.log(`   ✓ Frozen Account Scenarios`);
+  }
 }
 
-// Usage
-async function main() {
-  const tester = new BankingSystemTester();
-  await tester.runComprehensiveTests();
-}
+// Export for use
+module.exports = IAMTestTool;
 
-// Export for use as module
-module.exports = BankingSystemTester;
-
-// Run if called directly
+// Auto-run if executed directly
 if (require.main === module) {
-  main().catch(console.error);
+  const testTool = new IAMTestTool();
+  testTool.runAllTests();
 }

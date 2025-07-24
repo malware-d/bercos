@@ -1,3 +1,504 @@
+# ---
+# apiVersion: "api.cerbos.dev/v1"
+# resourcePolicy:
+#   version: "default"
+#   resource: account
+#   importDerivedRoles:
+#     - bank_roles
+#   rules:
+#     # View account information
+#     - actions: ['view']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - account_owner
+#         - teller
+#         - branch_manager
+#         - compliance_officer
+#         - auditor
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+
+#     # Update account information (limited fields for customers)
+#     - actions: ['update']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - account_owner
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.email_verified == true
+#               - expr: request.resource.attr.frozen == false
+#               # Only allow updating contact info, not financial data
+#               - expr: |
+#                   has(request.resource.attr.allowed_updates) && 
+#                   request.resource.attr.allowed_updates.all(field, 
+#                     field in ["phone", "address", "email", "preferences"])
+
+#     # Update account (full access for staff)
+#     - actions: ['update']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - teller
+#         - branch_manager
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.email_verified == true
+
+#     # Internal transfers (same bank)
+#     - actions: ['transfer:internal']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - account_owner
+#       condition:
+#         match:
+#           all:
+#             of:
+#               # Principal (user) validations
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.email_verified == true
+#               # Resource (account) validations
+#               - expr: request.resource.attr.frozen == false
+#               - expr: request.resource.attr.status == "active"
+#               # Amount validations - now correctly referencing resource
+#               - expr: request.resource.attr.balance >= request.resource.attr.transfer_amount
+#               - expr: request.principal.attr.daily_limit >= request.resource.attr.transfer_amount
+#               # Business rules
+#               - expr: request.resource.attr.transfer_amount > 0
+#               - expr: request.resource.attr.transfer_amount <= 50000000 # 50M VND limit for online
+#               # Ensure destination account exists and is valid
+#               - expr: has(request.resource.attr.destination_account_id)
+#               - expr: request.resource.attr.destination_account_id != request.resource.attr.account_id
+
+#     # External transfers (other banks)
+#     - actions: ['transfer:external']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - account_owner
+#       condition:
+#         match:
+#           all:
+#             of:
+#               # Principal validations
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.email_verified == true
+#               - expr: request.principal.attr.kyc_level >= 2 # Higher KYC for external transfers
+#               # Resource validations
+#               - expr: request.resource.attr.frozen == false
+#               - expr: request.resource.attr.status == "active"
+#               - expr: request.resource.attr.type == "checking" # Only checking accounts for external transfers
+#               # Amount validations
+#               - expr: request.resource.attr.balance >= request.resource.attr.transfer_amount
+#               - expr: request.principal.attr.daily_limit >= request.resource.attr.transfer_amount
+#               # Business rules for external transfers
+#               - expr: request.resource.attr.transfer_amount > 0
+#               - expr: request.resource.attr.transfer_amount <= 20000000 # 20M VND limit for external
+#               # Additional security for external transfers
+#               - expr: has(request.resource.attr.destination_bank_code)
+#               - expr: has(request.resource.attr.destination_account_number)
+
+#     # Staff can perform transfers with higher limits
+#     - actions: ['transfer:internal', 'transfer:external']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - teller
+#         - branch_manager
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.resource.attr.frozen == false
+#               - expr: request.resource.attr.balance >= request.resource.attr.transfer_amount
+#               - expr: request.resource.attr.transfer_amount > 0
+#               - expr: request.resource.attr.transfer_amount <= 500000000 # 500M VND for staff
+
+#     # Cash withdrawals
+#     - actions: ['withdraw']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - account_owner
+#         - teller
+#       condition:
+#         match:
+#           all:
+#             of:
+#               # Principal validations
+#               - expr: request.principal.attr.status == "active"
+#               # Resource validations
+#               - expr: request.resource.attr.frozen == false
+#               - expr: request.resource.attr.status == "active"
+#               # Amount validations - fixed to reference resource correctly
+#               - expr: request.resource.attr.balance >= request.resource.attr.withdraw_amount
+#               - expr: request.principal.attr.daily_limit >= request.resource.attr.withdraw_amount
+#               # Business rules
+#               - expr: request.resource.attr.withdraw_amount > 0
+#               - expr: |
+#                   (request.principal.attr.role == "customer" && request.resource.attr.withdraw_amount <= 10000000) ||
+#                   (request.principal.attr.role == "teller" && request.resource.attr.withdraw_amount <= 100000000)
+
+#     # Deposit money
+#     - actions: ['deposit']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - account_owner
+#         - teller
+#         - branch_manager
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.resource.attr.frozen == false
+#               - expr: request.resource.attr.status == "active"
+#               - expr: request.resource.attr.deposit_amount > 0
+#               # Anti-money laundering checks
+#               - expr: |
+#                   request.resource.attr.deposit_amount <= 100000000 ||
+#                   (has(request.resource.attr.aml_verified) && request.resource.attr.aml_verified == true)
+
+#     # Freeze/Unfreeze account (staff only)
+#     - actions: ['freeze', 'unfreeze']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - branch_manager
+#         - compliance_officer
+#         - security_admin
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.approval_level >= 2
+
+#     # Close account
+#     - actions: ['close']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - account_owner
+#         - branch_manager
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.resource.attr.balance == 0 # Must have zero balance
+#               - expr: request.resource.attr.frozen == false
+#               # Customer can close their own account, or manager can close any account
+#               - expr: |
+#                   (request.principal.attr.role == "customer" && request.principal.attr.email_verified == true) ||
+#                   (request.principal.attr.role == "manager" && request.principal.attr.approval_level >= 2)
+
+#     # Administrative actions
+#     - actions: ['admin:reset_pin', 'admin:unlock', 'admin:view_sensitive']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - branch_manager
+#         - system_admin
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.approval_level >= 3
+
+#     # Audit access (read-only)
+#     - actions: ['audit:view', 'audit:export']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - auditor
+#         - compliance_officer
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.read_only == true
+
+#     # Deny all other actions by default
+#     - actions: ['*']
+#       effect: EFFECT_DENY
+#       roles: ['*']
+# ---
+# apiVersion: api.cerbos.dev/v1
+# resourcePolicy:
+#   version: "default"
+#   importDerivedRoles:
+#     - bank_roles
+#   resource: "account"
+#   rules:
+#     # Xem số dư tài khoản
+#     - actions: ['view:balance']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - account_owner
+#         - branch_manager
+#         - branch_director
+#         - compliance_officer
+#         - auditor
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.email_verified == true
+
+#     # Xem sao kê tài khoản
+#     - actions: ['view:statement']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - account_owner
+#         - branch_manager
+#         - branch_director
+#         - compliance_officer
+#         - auditor
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.email_verified == true
+
+#     # Chuyển khoản nội bộ (trong cùng ngân hàng)
+#     - actions: ['transfer:internal']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - account_owner
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.email_verified == true
+#               - expr: request.resource.attr.frozen == false
+#               - expr: request.resource.attr.balance >= request.resource.attr.transfer_amount
+#               - expr: request.principal.attr.daily_limit >= request.resource.attr.transfer_amount
+#               - expr: request.resource.attr.transfer_amount >= 10000  # Tối thiểu 10k VND
+#               - expr: request.resource.attr.transfer_amount <= 500000000  # Tối đa 500tr VND
+
+#     # Chuyển khoản ngoại bộ (liên ngân hàng)
+#     - actions: ['transfer:external']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - account_owner
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.email_verified == true
+#               - expr: request.principal.attr.sms_verified == true
+#               - expr: request.resource.attr.frozen == false
+#               - expr: request.resource.attr.balance >= request.resource.attr.transfer_amount
+#               - expr: request.principal.attr.daily_limit >= request.resource.attr.transfer_amount
+#               - expr: request.resource.attr.transfer_amount >= 10000  # Tối thiểu 10k VND  
+#               - expr: request.resource.attr.transfer_amount <= 50000000  # Tối đa 50tr VND cho chuyển ngoại bộ
+#               # Phí chuyển khoản
+#               - expr: request.resource.attr.balance >= (request.resource.attr.transfer_amount + 5000)
+
+#     # Chuyển khoản ngoại bộ với số tiền lớn (cần phê duyệt)
+#     - actions: ['transfer:external:large']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - account_owner
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.email_verified == true
+#               - expr: request.principal.attr.sms_verified == true
+#               - expr: request.principal.attr.kyc_level >= 2  # KYC level cao
+#               - expr: request.resource.attr.frozen == false
+#               - expr: request.resource.attr.balance >= request.resource.attr.transfer_amount
+#               - expr: request.resource.attr.transfer_amount > 50000000  # Trên 50tr VND
+#               - expr: request.resource.attr.transfer_amount <= 1000000000  # Tối đa 1 tỷ VND
+#               - expr: request.resource.attr.balance >= (request.resource.attr.transfer_amount + 10000)
+
+#     # Nạp tiền
+#     - actions: ['deposit']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - account_owner
+#         - teller
+#         - branch_manager
+#         - branch_director
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.resource.attr.frozen == false
+#               - expr: request.resource.attr.deposit_amount >= 10000  # Tối thiểu 10k VND
+#               - expr: request.resource.attr.deposit_amount <= 2000000000  # Tối đa 2 tỷ VND/lần
+
+#     # Rút tiền - Khách hàng
+#     - actions: ['withdraw']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - account_owner
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.resource.attr.frozen == false
+#               - expr: request.resource.attr.balance >= request.resource.attr.withdraw_amount
+#               - expr: request.principal.attr.daily_limit >= request.resource.attr.withdraw_amount
+#               - expr: request.resource.attr.withdraw_amount >= 50000  # Tối thiểu 50k VND
+#               - expr: request.resource.attr.withdraw_amount <= 20000000  # Tối đa 20tr VND/lần cho khách hàng
+#               - expr: (request.resource.attr.withdraw_amount % 50000) == 0  # Bội số của 50k
+
+#     # Rút tiền - Giao dịch viên (không giới hạn daily_limit)
+#     - actions: ['withdraw']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - teller
+#         - branch_manager
+#         - branch_director
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.resource.attr.frozen == false
+#               - expr: request.resource.attr.balance >= request.resource.attr.withdraw_amount
+#               - expr: request.resource.attr.withdraw_amount >= 50000  # Tối thiểu 50k VND
+#               - expr: request.resource.attr.withdraw_amount <= 500000000  # Tối đa 500tr VND/lần cho nhân viên
+#               - expr: (request.resource.attr.withdraw_amount % 50000) == 0  # Bội số của 50k
+#               # Kiểm tra cùng chi nhánh
+#               - expr: request.principal.attr.branch_code == request.resource.attr.branch_code
+
+#     # Đóng băng tài khoản
+#     - actions: ['freeze']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - branch_manager
+#         - branch_director
+#         - compliance_officer
+#         - security_admin
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.approval_level >= 2
+
+#     # Mở băng tài khoản
+#     - actions: ['unfreeze']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - branch_manager
+#         - branch_director
+#         - compliance_officer
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.approval_level >= 3
+#               # Cần lý do mở băng
+#               - expr: request.resource.attr.unfreeze_reason != ""
+
+#     # Xem thông tin quản trị
+#     - actions: ['view:admin']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - branch_manager
+#         - branch_director
+#         - compliance_officer
+#         - security_admin
+#         - system_admin
+#         - auditor
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.approval_level >= 2
+
+#     # Tạo tài khoản mới
+#     - actions: ['create:account']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - teller
+#         - branch_manager
+#         - branch_director
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.branch_code == request.resource.attr.branch_code
+#               - expr: request.resource.attr.initial_deposit >= 50000  # Số dư mở tài khoản tối thiểu
+#               - expr: request.resource.attr.customer_kyc_verified == true
+
+#     # Đóng tài khoản
+#     - actions: ['close:account']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - branch_manager
+#         - branch_director
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.branch_code == request.resource.attr.branch_code
+#               - expr: request.principal.attr.approval_level >= 2
+#               - expr: request.resource.attr.balance <= 10000  # Số dư gần bằng 0
+#               - expr: request.resource.attr.frozen == false
+
+#     # Cập nhật thông tin tài khoản
+#     - actions: ['update:account']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - account_owner
+#         - teller
+#         - branch_manager
+#         - branch_director
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.resource.attr.frozen == false
+
+#     # Xem lịch sử giao dịch chi tiết (cho compliance và audit)
+#     - actions: ['view:transaction:history']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - compliance_officer
+#         - auditor
+#         - security_admin
+#         - branch_director
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.approval_level >= 3
+
+#     # Emergency: Khóa tài khoản khẩn cấp
+#     - actions: ['emergency:lock']
+#       effect: EFFECT_ALLOW
+#       derivedRoles:
+#         - security_admin
+#         - compliance_officer
+#         - branch_director
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.approval_level >= 4
 ---
 apiVersion: api.cerbos.dev/v1
 resourcePolicy:
@@ -34,6 +535,11 @@ resourcePolicy:
         match:
           all:
             of:
+              # - expr: request.principal.attr.status == "active"
+              # - expr: request.principal.attr.email_verified == true
+              # - expr: request.resource.attr.balance >= request.resource.attr.transfer_amount
+              # - expr: request.principal.attr.daily_limit >= request.resource.attr.transfer_amount
+              # - expr: request.resource.attr.frozen == false
               - expr: request.principal.attr.status == "active"
               - expr: request.principal.attr.email_verified == true
               - expr: request.resource.attr.balance >= request.principal.attr.transfer_amount
@@ -48,6 +554,11 @@ resourcePolicy:
         match:
           all:
             of:
+              # - expr: request.principal.attr.status == "active"
+              # - expr: request.principal.attr.email_verified == true
+              # - expr: request.resource.attr.balance >= request.resource.attr.transfer_amount
+              # - expr: request.principal.attr.daily_limit >= request.resource.attr.transfer_amount
+              # - expr: request.resource.attr.frozen == false
               - expr: request.principal.attr.status == "active"
               - expr: request.principal.attr.email_verified == true
               - expr: request.principal.attr.sms_verified == true
@@ -78,6 +589,10 @@ resourcePolicy:
         match:
           all:
             of:
+              # - expr: request.principal.attr.status == "active"
+              # - expr: request.resource.attr.balance >= request.resource.attr.withdraw_amount
+              # - expr: request.resource.attr.frozen == false
+              # - expr: request.principal.attr.daily_limit >= request.resource.attr.withdraw_amount
               - expr: request.principal.attr.status == "active"
               - expr: request.resource.attr.balance >= request.principal.attr.withdraw_amount
               - expr: request.resource.attr.frozen == false
@@ -111,6 +626,7 @@ resourcePolicy:
         - branch_manager
         - compliance_officer
         - security_admin
+        - auditor
       condition:
         match:
           expr: request.principal.attr.status == "active"

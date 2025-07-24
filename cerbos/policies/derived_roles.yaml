@@ -1,3 +1,298 @@
+# ---
+# apiVersion: "api.cerbos.dev/v1"
+# derivedRoles:
+#   name: bank_roles
+#   definitions:
+#     # Customer who owns the account
+#     - name: account_owner
+#       parentRoles: ["customer"]
+#       condition:
+#         match:
+#           all:
+#             of:
+#               # Must be the owner of the account
+#               - expr: request.resource.attr.customer_id == request.principal.attr.customer_id
+#               # Basic user status checks
+#               - expr: request.principal.attr.status == "active"
+#               # Either external customer OR internal staff with customer role
+#               - expr: |
+#                   (request.principal.attr.email.endsWith("@mbbank.com") == false) ||
+#                   (request.principal.attr.email.endsWith("@mbbank.com") && request.principal.attr.role == "customer")
+#               # Account must not be dormant
+#               - expr: |
+#                   !has(request.resource.attr.last_activity) ||
+#                   (timestamp(request.resource.attr.last_activity).timeSince() < duration("365d"))
+
+#     # Bank teller - can perform customer service operations
+#     - name: teller
+#       parentRoles: ["teller"]
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.email.endsWith("@mbbank.com")
+#               - expr: request.principal.attr.role == "teller"
+#               - expr: request.principal.attr.branch_code != ""
+#               - expr: request.principal.attr.employee_id != ""
+#               # Must be in working hours for high-value transactions
+#               - expr: |
+#                   now().getHours() >= 8 && now().getHours() <= 17 ||
+#                   request.resource.attr.transaction_amount <= 1000000
+
+#     # Branch manager - higher authority for approvals
+#     - name: branch_manager
+#       parentRoles: ["manager"]
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.email.endsWith("@mbbank.com")
+#               - expr: request.principal.attr.role == "manager"
+#               - expr: request.principal.attr.approval_level >= 2
+#               - expr: request.principal.attr.branch_code != ""
+#               - expr: request.principal.attr.employee_id != ""
+#               # Can only manage accounts in their branch (unless head office)
+#               - expr: |
+#                   request.principal.attr.branch_code == "HO" ||
+#                   request.resource.attr.branch_code == request.principal.attr.branch_code
+
+#     # Compliance officer - for regulatory oversight
+#     - name: compliance_officer
+#       parentRoles: ["compliance"]
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.email.endsWith("@mbbank.com")
+#               - expr: request.principal.attr.role == "compliance"
+#               - expr: request.principal.attr.department == "compliance"
+#               - expr: request.principal.attr.approval_level >= 3
+#               - expr: request.principal.attr.employee_id != ""
+#               # Must have valid compliance certification
+#               - expr: |
+#                   has(request.principal.attr.certification_expiry) &&
+#                   timestamp(request.principal.attr.certification_expiry) > now()
+
+#     # Security administrator - for security-related operations
+#     - name: security_admin
+#       parentRoles: ["security"]
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.email.endsWith("@mbbank.com")
+#               - expr: request.principal.attr.role == "security"
+#               - expr: request.principal.attr.department == "security"
+#               - expr: request.principal.attr.approval_level >= 4
+#               - expr: request.principal.attr.employee_id != ""
+#               # Security clearance check
+#               - expr: |
+#                   has(request.principal.attr.security_clearance) &&
+#                   request.principal.attr.security_clearance in ["secret", "top_secret"]
+
+#     # System administrator - for technical operations
+#     - name: system_admin
+#       parentRoles: ["admin"]
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.email.endsWith("@mbbank.com")
+#               - expr: request.principal.attr.role == "admin"
+#               - expr: request.principal.attr.department == "it"
+#               - expr: request.principal.attr.approval_level >= 5
+#               - expr: request.principal.attr.employee_id != ""
+#               # Must be during business hours or emergency access
+#               - expr: |
+#                   (now().getHours() >= 6 && now().getHours() <= 22) ||
+#                   (has(request.resource.attr.emergency_access) && request.resource.attr.emergency_access == true)
+
+#     # Auditor - read-only access for audit purposes
+#     - name: auditor
+#       parentRoles: ["auditor"]
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.email.endsWith("@mbbank.com")
+#               - expr: request.principal.attr.role == "auditor"
+#               - expr: request.principal.attr.department == "audit"
+#               - expr: request.principal.attr.read_only == true
+#               - expr: request.principal.attr.employee_id != ""
+#               # Auditor must have valid audit certification
+#               - expr: |
+#                   has(request.principal.attr.audit_license) &&
+#                   timestamp(request.principal.attr.audit_license_expiry) > now()
+
+#     # Special role for high-value customer service
+#     - name: premium_service_rep
+#       parentRoles: ["teller"]
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.email.endsWith("@mbbank.com")
+#               - expr: request.principal.attr.role == "teller"
+#               - expr: request.principal.attr.premium_certified == true
+#               - expr: request.principal.attr.approval_level >= 2
+#               # Can handle premium customers (VIP accounts)
+#               - expr: |
+#                   has(request.resource.attr.account_tier) &&
+#                   request.resource.attr.account_tier in ["gold", "platinum", "diamond"]
+
+#     # Emergency access role for critical situations
+#     - name: emergency_responder
+#       parentRoles: ["manager", "security"]
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.email.endsWith("@mbbank.com")
+#               - expr: request.principal.attr.approval_level >= 3
+#               # Must be during declared emergency
+#               - expr: |
+#                   has(request.resource.attr.emergency_declared) &&
+#                   request.resource.attr.emergency_declared == true
+#               # Emergency access must be time-limited
+#               - expr: |
+#                   has(request.resource.attr.emergency_expires) &&
+#                   timestamp(request.resource.attr.emergency_expires) > now()
+
+#     # Temporary role for account recovery specialists
+#     - name: recovery_specialist
+#       parentRoles: ["teller"]
+#       condition:
+#         match:
+#           all:
+#             of:
+#               - expr: request.principal.attr.status == "active"
+#               - expr: request.principal.attr.email.endsWith("@mbbank.com")
+#               - expr: request.principal.attr.role == "recovery_specialist"
+#               - expr: request.principal.attr.department == "customer_service"
+#               - expr: request.principal.attr.specialized_training == true
+#               # Can only work on flagged recovery accounts
+#               - expr: |
+#                   has(request.resource.attr.recovery_mode) &&
+#                   request.resource.attr.recovery_mode == true
+
+# # ---
+# # apiVersion: "api.cerbos.dev/v1"
+# # derivedRoles:
+# #   name: bank_roles
+# #   definitions:
+# #     # Khách hàng sở hữu tài khoản
+# #     - name: account_owner
+# #       parentRoles: ["customer"]
+# #       condition:
+# #         match:
+# #           all:
+# #             of:
+# #               - expr: request.resource.attr.customer_id == request.principal.attr.customer_id
+# #               - expr: request.principal.attr.status == "active"
+# #               - expr: request.principal.attr.role == "customer"
+# #               # Khách hàng không được dùng email nội bộ ngân hàng
+# #               - expr: request.principal.attr.email.endsWith("@mbbank.com") == false
+
+# #     # Giao dịch viên
+# #     - name: teller
+# #       parentRoles: ["teller"]
+# #       condition:
+# #         match:
+# #           all:
+# #             of:
+# #               - expr: request.principal.attr.status == "active"
+# #               - expr: request.principal.attr.role == "teller"
+# #               - expr: request.principal.attr.email.endsWith("@mbbank.com")
+# #               - expr: request.principal.attr.branch_code != ""
+# #               - expr: request.principal.attr.approval_level >= 1
+
+# #     # Trưởng phòng giao dịch
+# #     - name: branch_manager
+# #       parentRoles: ["manager"]
+# #       condition:
+# #         match:
+# #           all:
+# #             of:
+# #               - expr: request.principal.attr.status == "active"
+# #               - expr: request.principal.attr.role == "manager"
+# #               - expr: request.principal.attr.email.endsWith("@mbbank.com")
+# #               - expr: request.principal.attr.branch_code != ""
+# #               - expr: request.principal.attr.approval_level >= 2
+# #               - expr: request.principal.attr.department == "branch"
+
+# #     # Cán bộ tuân thủ
+# #     - name: compliance_officer
+# #       parentRoles: ["compliance"]
+# #       condition:
+# #         match:
+# #           all:
+# #             of:
+# #               - expr: request.principal.attr.status == "active"
+# #               - expr: request.principal.attr.role == "compliance"
+# #               - expr: request.principal.attr.email.endsWith("@mbbank.com")
+# #               - expr: request.principal.attr.department == "compliance"
+# #               - expr: request.principal.attr.approval_level >= 3
+
+# #     # Quản trị viên bảo mật
+# #     - name: security_admin
+# #       parentRoles: ["security"]
+# #       condition:
+# #         match:
+# #           all:
+# #             of:
+# #               - expr: request.principal.attr.status == "active"
+# #               - expr: request.principal.attr.role == "security"
+# #               - expr: request.principal.attr.email.endsWith("@mbbank.com")
+# #               - expr: request.principal.attr.department == "security"
+# #               - expr: request.principal.attr.approval_level >= 4
+
+# #     # Quản trị viên hệ thống
+# #     - name: system_admin
+# #       parentRoles: ["admin"]
+# #       condition:
+# #         match:
+# #           all:
+# #             of:
+# #               - expr: request.principal.attr.status == "active"
+# #               - expr: request.principal.attr.role == "admin"
+# #               - expr: request.principal.attr.email.endsWith("@mbbank.com")
+# #               - expr: request.principal.attr.department == "it"
+# #               - expr: request.principal.attr.approval_level >= 5
+
+# #     # Kiểm toán viên (chỉ đọc)
+# #     - name: auditor
+# #       parentRoles: ["auditor"]
+# #       condition:
+# #         match:
+# #           all:
+# #             of:
+# #               - expr: request.principal.attr.status == "active"
+# #               - expr: request.principal.attr.role == "auditor"
+# #               - expr: request.principal.attr.email.endsWith("@mbbank.com")
+# #               - expr: request.principal.attr.department == "audit"
+# #               - expr: request.principal.attr.read_only == true
+
+# #     # Giám đốc chi nhánh (quyền cao nhất tại chi nhánh)
+# #     - name: branch_director
+# #       parentRoles: ["director"]
+# #       condition:
+# #         match:
+# #           all:
+# #             of:
+# #               - expr: request.principal.attr.status == "active"
+# #               - expr: request.principal.attr.role == "director"
+# #               - expr: request.principal.attr.email.endsWith("@mbbank.com")
+# #               - expr: request.principal.attr.branch_code != ""
+# #               - expr: request.principal.attr.approval_level >= 6
+# #               - expr: request.principal.attr.department == "branch"
 ---
 apiVersion: "api.cerbos.dev/v1"
 derivedRoles:
